@@ -146,7 +146,12 @@ inline algorithmFPType predictForTree(const DecisionTreeType & t, const FeatureT
         const FeatureIndexType splitFeature = fIndexes[i];
         i                                   = updateIndex(i, x[splitFeature], values, defaultLeft, featTypes, splitFeature, dispatcher);
     }
-    return values[i];
+    if (i < t.getNumberOfNodes()) {
+        return values[i];
+    } else {
+        return 0;
+    }
+
 }
 
 template <typename algorithmFPType>

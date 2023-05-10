@@ -128,7 +128,7 @@ protected:
 
     inline void predict(size_t iTree, size_t nTrees, size_t nRows, size_t nColumns, const algorithmFPType * x, algorithmFPType * res)
     {
-        const bool hasAnyMissing = checkForMissing(x, nTrees, nRows, nColumns);
+        const bool hasAnyMissing = true; //checkForMissing(x, nTrees, nRows, nColumns);
         if (hasAnyMissing)
         {
             predict<true>(iTree, nTrees, nRows, nColumns, x, res);
@@ -184,22 +184,47 @@ services::Status PredictRegressionTask<algorithmFPType, cpu>::runInternal(servic
     SafeStatus safeStat;
     services::Status s;
     HostAppHelper host(pHostApp, 100);
-    for (size_t iTree = 0; iTree < nTreesTotal; iTree += dim.nTreesInBlock)
-    {
-        if (!s || host.isCancelled(s, 1)) return s;
-        size_t nTreesToUse = ((iTree + dim.nTreesInBlock) < nTreesTotal ? dim.nTreesInBlock : (nTreesTotal - iTree));
-
-        daal::threader_for(dim.nDataBlocks, dim.nDataBlocks, [&](size_t iBlock) {
+    
+    if (true) {
+        // The size of the last block is >= dim.nRowsInBlock 
+        const size_t nRowsInBuffer = dim.nRowsTotal - (dim.nDataBlocks - 1) * dim.nRowsInBlock;
+        TArray<algorithmFPType, cpu> res_buffer(nRowsInBuffer * nTreesTotal);
+        for (size_t iBlock = 0; iBlock < dim.nDataBlocks; ++iBlock) {
+            if (!s || host.isCancelled(s, 1)) return s;
             const size_t iStartRow      = iBlock * dim.nRowsInBlock;
             const size_t nRowsToProcess = (iBlock == dim.nDataBlocks - 1) ? dim.nRowsTotal - iBlock * dim.nRowsInBlock : dim.nRowsInBlock;
+            services::internal::service_memset<algorithmFPType, cpu>(res_buffer.get(), algorithmFPType(0), nRowsToProcess * nTreesTotal);
             ReadRows<algorithmFPType, cpu> xBD(const_cast<NumericTable *>(this->_data), iStartRow, nRowsToProcess);
-            DAAL_CHECK_BLOCK_STATUS_THR(xBD);
+            DAAL_CHECK_BLOCK_STATUS(xBD);
+
+            daal::threader_for(nTreesTotal, nTreesTotal, [&](size_t iTree) {
+                predict(iTree, nTreesTotal, nRowsToProcess, dim.nCols, xBD.get(), res_buffer.get() + iTree * nRowsToProcess);
+            });
+
             algorithmFPType * res = resBD.get() + iStartRow;
+            for (size_t iTree = 0; iTree < nTreesTotal; ++iTree) {
+                algorithmFPType * res_buff_ptr = res_buffer.get() + iTree * nRowsToProcess;
+                for (size_t iRow = 0; iRow < nRowsToProcess; ++iRow) {
+                    res[iRow] += res_buff_ptr[iRow];
+                }
+            }
+            s = safeStat.detach();
+        }
+    } else {
+        for (size_t iTree = 0; iTree < nTreesTotal; iTree += dim.nTreesInBlock)
+        {
+            if (!s || host.isCancelled(s, 1)) return s;
+            daal::threader_for(dim.nDataBlocks, dim.nDataBlocks, [&](size_t iBlock) {
+                const size_t iStartRow      = iBlock * dim.nRowsInBlock;
+                const size_t nRowsToProcess = (iBlock == dim.nDataBlocks - 1) ? dim.nRowsTotal - iBlock * dim.nRowsInBlock : dim.nRowsInBlock;
+                ReadRows<algorithmFPType, cpu> xBD(const_cast<NumericTable *>(this->_data), iStartRow, nRowsToProcess);
+                DAAL_CHECK_BLOCK_STATUS_THR(xBD);
+                algorithmFPType * res = resBD.get() + iStartRow;
 
-            predict(iTree, nTreesTotal, nRowsToProcess, dim.nCols, xBD.get(), res);
-        });
-
-        s = safeStat.detach();
+                predict(iTree, nTreesTotal, nRowsToProcess, dim.nCols, xBD.get(), res);
+            });
+            s = safeStat.detach();
+        }
     }
 
     return s;
@@ -222,15 +247,15 @@ void PredictRegressionTask<algorithmFPType, cpu>::predictByTreesVector(size_t iF
                                                                        algorithmFPType * res,
                                                                        const dispatcher_t<hasUnorderedFeatures, hasAnyMissing> & dispatcher)
 {
-    algorithmFPType v[VECTOR_BLOCK_SIZE];
-    for (size_t iTree = iFirstTree, iLastTree = iFirstTree + nTrees; iTree < iLastTree; ++iTree)
-    {
-        gbt::prediction::internal::predictForTreeVector<algorithmFPType, TreeType, cpu>(*this->_aTree[iTree], this->_featHelper, x, v, dispatcher);
+    // algorithmFPType v[VECTOR_BLOCK_SIZE];
+    // for (size_t iTree = iFirstTree, iLastTree = iFirstTree + nTrees; iTree < iLastTree; ++iTree)
+    // {
+    //     gbt::prediction::internal::predictForTreeVector<algorithmFPType, TreeType, cpu>(*this->_aTree[iTree], this->_featHelper, x, v, dispatcher);
 
-        PRAGMA_IVDEP
-        PRAGMA_VECTOR_ALWAYS
-        for (size_t j = 0; j < VECTOR_BLOCK_SIZE; ++j) res[j] += v[j];
-    }
+    //     PRAGMA_IVDEP
+    //     PRAGMA_VECTOR_ALWAYS
+    //     for (size_t j = 0; j < VECTOR_BLOCK_SIZE; ++j) res[j] += v[j];
+    // }
 }
 
 } /* namespace internal */
