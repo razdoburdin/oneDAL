@@ -43,7 +43,7 @@ namespace internal
 {
 typedef float ModelFPType;
 typedef uint32_t FeatureIndexType;
-const FeatureIndexType VECTOR_BLOCK_SIZE = 64;
+// const FeatureIndexType VECTOR_BLOCK_SIZE = 32;
 
 template <bool hasUnorderedFeatures, bool hasAnyMissing>
 struct PredictDispatcher
@@ -95,7 +95,7 @@ inline FeatureIndexType updateIndex(FeatureIndexType idx, algorithmFPType valueF
     }
 }
 
-template <typename algorithmFPType, typename DecisionTreeType, CpuType cpu, bool hasUnorderedFeatures, bool hasAnyMissing>
+template <typename algorithmFPType, typename DecisionTreeType, CpuType cpu, bool hasUnorderedFeatures, bool hasAnyMissing, size_t vectorBlockSize>
 inline void predictForTreeVector(const DecisionTreeType & t, const FeatureTypes & featTypes, const algorithmFPType * x, algorithmFPType v[],
                                  const PredictDispatcher<hasUnorderedFeatures, hasAnyMissing> & dispatcher)
 {
@@ -104,8 +104,8 @@ inline void predictForTreeVector(const DecisionTreeType & t, const FeatureTypes 
     const int * const defaultLeft           = t.getdefaultLeftForSplit() - 1;
     const FeatureIndexType nFeat            = featTypes.getNumberOfFeatures();
 
-    FeatureIndexType i[VECTOR_BLOCK_SIZE];
-    services::internal::service_memset_seq<FeatureIndexType, cpu>(i, FeatureIndexType(1), VECTOR_BLOCK_SIZE);
+    FeatureIndexType i[vectorBlockSize];
+    services::internal::service_memset_seq<FeatureIndexType, cpu>(i, FeatureIndexType(1), vectorBlockSize);
 
     const FeatureIndexType maxLvl = t.getMaxLvl();
 
@@ -113,7 +113,7 @@ inline void predictForTreeVector(const DecisionTreeType & t, const FeatureTypes 
     {
         PRAGMA_IVDEP
         PRAGMA_VECTOR_ALWAYS
-        for (FeatureIndexType k = 0; k < VECTOR_BLOCK_SIZE; k++)
+        for (FeatureIndexType k = 0; k < vectorBlockSize; k++)
         {
             const FeatureIndexType idx          = i[k];
             const FeatureIndexType splitFeature = fIndexes[idx];
@@ -123,7 +123,7 @@ inline void predictForTreeVector(const DecisionTreeType & t, const FeatureTypes 
 
     PRAGMA_IVDEP
     PRAGMA_VECTOR_ALWAYS
-    for (FeatureIndexType k = 0; k < VECTOR_BLOCK_SIZE; k++)
+    for (FeatureIndexType k = 0; k < vectorBlockSize; k++)
     {
         v[k] = values[i[k]];
     }
@@ -149,33 +149,36 @@ inline algorithmFPType predictForTree(const DecisionTreeType & t, const FeatureT
     return values[i];
 }
 
-template <typename algorithmFPType>
 struct TileDimensions
 {
-    size_t nRowsTotal    = 0;
-    size_t nTreesTotal   = 0;
-    size_t nCols         = 0;
-    size_t nRowsInBlock  = 0;
-    size_t nTreesInBlock = 0;
-    size_t nDataBlocks   = 0;
-    size_t nTreeBlocks   = 0;
+    size_t nRowsTotal      = 0;
+    size_t nTreesTotal     = 0;
+    size_t nCols           = 0;
+    size_t nRowsInBlock    = 0;
+    size_t nTreesInBlock   = 0;
+    size_t nLargeBlocks    = 0;
+    size_t nDataBlocks     = 0;
+    size_t nTreeBlocks     = 0;
+
+    // vectorBlockSize = vectorBlockSizeFactor * vectorBlockSizeStep
+    size_t vectorBlockSizeFactor                     = 0;
+    // maxVectorBlockSizeFactor = 3 is selected from the results of benchmarking
+    static constexpr size_t maxVectorBlockSizeFactor = 3;
+    static constexpr size_t vectorBlockSizeStep      = 16;
 
     TileDimensions(const NumericTable & data, size_t nTrees)
         : nTreesTotal(nTrees), nRowsTotal(data.getNumberOfRows()), nCols(data.getNumberOfColumns())
     {
-        nRowsInBlock = nRowsTotal;
-
-        if (nRowsTotal > 2 * VECTOR_BLOCK_SIZE)
+        vectorBlockSizeFactor = maxVectorBlockSizeFactor;
+        size_t vectorBlockSize = vectorBlockSizeStep * vectorBlockSizeFactor;
+        while ((daal::threader_get_threads_number() * vectorBlockSize > nRowsTotal) && (vectorBlockSizeFactor > 1))
         {
-            nRowsInBlock = 2 * VECTOR_BLOCK_SIZE;
-
-            if (daal::threader_get_threads_number() > nRowsTotal / nRowsInBlock)
-            {
-                nRowsInBlock = VECTOR_BLOCK_SIZE;
-            }
+            vectorBlockSizeFactor -= 1;
+            vectorBlockSize = vectorBlockSizeStep * vectorBlockSizeFactor;
         }
-        nDataBlocks = nRowsTotal / nRowsInBlock;
-
+        nRowsInBlock = nRowsTotal > vectorBlockSize ? vectorBlockSize : nRowsTotal;
+        nDataBlocks = nRowsTotal / nRowsInBlock + (nRowsTotal % nRowsInBlock != 0);
+        
         nTreesInBlock = nTreesTotal;
         nTreeBlocks   = 1;
     }
