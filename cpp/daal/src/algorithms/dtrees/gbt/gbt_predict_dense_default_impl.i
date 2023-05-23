@@ -43,7 +43,6 @@ namespace internal
 {
 typedef float ModelFPType;
 typedef uint32_t FeatureIndexType;
-// const FeatureIndexType VECTOR_BLOCK_SIZE = 32;
 
 template <bool hasUnorderedFeatures, bool hasAnyMissing>
 struct PredictDispatcher
@@ -163,6 +162,7 @@ struct TileDimensions
     // vectorBlockSize = vectorBlockSizeFactor * vectorBlockSizeStep
     size_t vectorBlockSizeFactor                     = 0;
     // maxVectorBlockSizeFactor = 3 is selected from the results of benchmarking
+    // possible values of vectorBlockSize are [48, 32, 16]
     static constexpr size_t maxVectorBlockSizeFactor = 3;
     static constexpr size_t vectorBlockSizeStep      = 16;
 
