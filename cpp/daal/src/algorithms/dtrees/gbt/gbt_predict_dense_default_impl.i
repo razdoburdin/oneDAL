@@ -148,37 +148,45 @@ inline algorithmFPType predictForTree(const DecisionTreeType & t, const FeatureT
     return values[i];
 }
 
+template <typename algorithmFPType>
 struct TileDimensions
 {
-    size_t nRowsTotal      = 0;
-    size_t nTreesTotal     = 0;
-    size_t nCols           = 0;
-    size_t nRowsInBlock    = 0;
-    size_t nTreesInBlock   = 0;
-    size_t nLargeBlocks    = 0;
-    size_t nDataBlocks     = 0;
-    size_t nTreeBlocks     = 0;
+    size_t nRowsTotal    = 0;
+    size_t nTreesTotal   = 0;
+    size_t nCols         = 0;
+    size_t nRowsInBlock  = 0;
+    size_t nTreesInBlock = 0;
+    size_t nLargeBlocks  = 0;
+    size_t nDataBlocks   = 0;
+    size_t nTreeBlocks   = 0;
 
     // vectorBlockSize = vectorBlockSizeFactor * vectorBlockSizeStep
     size_t vectorBlockSizeFactor                     = 0;
-    // maxVectorBlockSizeFactor = 3 is selected from the results of benchmarking
-    // possible values of vectorBlockSize are [48, 32, 16]
-    static constexpr size_t maxVectorBlockSizeFactor = 3;
+    static constexpr size_t maxVectorBlockSizeFactor = 16;
+    static constexpr size_t minVectorBlockSizeFactor = 2;
     static constexpr size_t vectorBlockSizeStep      = 16;
+    // optimalBlockSizeFactor is selected from benchmarking
+    static constexpr size_t optimalBlockSizeFactor = 3;
 
-    TileDimensions(const NumericTable & data, size_t nTrees)
+    TileDimensions(const NumericTable & data, size_t nTrees, size_t nNodes)
         : nTreesTotal(nTrees), nRowsTotal(data.getNumberOfRows()), nCols(data.getNumberOfColumns())
     {
-        vectorBlockSizeFactor = maxVectorBlockSizeFactor;
+        // Use smaller vectorBlockSize if trees fit to L2
+        // Each node contain 3 values
+        size_t nodesSize                = (sizeof(ModelFPType) + sizeof(FeatureIndexType) + sizeof(int)) * nNodes;
+        constexpr float add_hoc_L2_size = 0.85 * 2 * 1024 * 1024;
+        const bool treesFitToL2         = nodesSize < add_hoc_L2_size;
+        vectorBlockSizeFactor           = treesFitToL2 ? optimalBlockSizeFactor : maxVectorBlockSizeFactor;
+
+        // Decrease vectorBlockSize if number of rows if too small
+        const size_t twoBlocksPerThreadFactor = nRowsTotal / (2 * daal::threader_get_threads_number() * vectorBlockSizeStep);
+        if (vectorBlockSizeFactor > twoBlocksPerThreadFactor) vectorBlockSizeFactor = twoBlocksPerThreadFactor;
+        if (vectorBlockSizeFactor < minVectorBlockSizeFactor) vectorBlockSizeFactor = minVectorBlockSizeFactor;
+
         size_t vectorBlockSize = vectorBlockSizeStep * vectorBlockSizeFactor;
-        while ((daal::threader_get_threads_number() * vectorBlockSize > nRowsTotal) && (vectorBlockSizeFactor > 1))
-        {
-            vectorBlockSizeFactor -= 1;
-            vectorBlockSize = vectorBlockSizeStep * vectorBlockSizeFactor;
-        }
-        nRowsInBlock = nRowsTotal > vectorBlockSize ? vectorBlockSize : nRowsTotal;
-        nDataBlocks = nRowsTotal / nRowsInBlock + (nRowsTotal % nRowsInBlock != 0);
-        
+        nRowsInBlock           = nRowsTotal > vectorBlockSize ? vectorBlockSize : nRowsTotal;
+        nDataBlocks            = nRowsTotal / nRowsInBlock + (nRowsTotal % nRowsInBlock != 0);
+
         nTreesInBlock = nTreesTotal;
         nTreeBlocks   = 1;
     }

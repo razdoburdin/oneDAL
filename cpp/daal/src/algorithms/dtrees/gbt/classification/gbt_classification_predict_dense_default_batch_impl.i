@@ -167,7 +167,7 @@ class PredictMulticlassTask
 {
 public:
     typedef gbt::internal::GbtDecisionTree TreeType;
-    typedef gbt::prediction::internal::TileDimensions DimType;
+    typedef gbt::prediction::internal::TileDimensions<algorithmFPType> DimType;
     typedef daal::tls<algorithmFPType *> ClassesRawBoostedTlsBase;
     typedef daal::TlsMem<algorithmFPType, cpu> ClassesRawBoostedTls;
 
@@ -209,6 +209,16 @@ protected:
     inline algorithmFPType * updateBuffer(algorithmFPType * buff, size_t buf_shift, size_t buf_size, BooleanConstant<false> dispatcher)
     {
         return buff + buf_shift;
+    }
+
+    inline size_t getNumberOfNodes(size_t nTrees)
+    {
+        size_t nNodesTotal = 0;
+        for (size_t iTree = 0; iTree < nTrees; ++iTree)
+        {
+            nNodesTotal += this->_aTree[iTree]->getNumberOfNodes();
+        }
+        return nNodesTotal;
     }
 
     inline bool checkForMissing(const algorithmFPType * x, size_t nTrees, size_t nRows, size_t nColumns)
@@ -285,41 +295,51 @@ protected:
         }
     }
 
+    // Recursivelly checking template parameter until it becomes equal to dim.vectorBlockSizeFactor or equal to DimType::minVectorBlockSizeFactor.
     template <bool isResValidPtr, bool reuseBuffer, size_t vectorBlockSizeFactor>
     inline void predict(size_t nTrees, size_t nClasses, size_t nRows, size_t nColumns, const algorithmFPType * x, algorithmFPType * buff,
-                        algorithmFPType * res, const gbt::prediction::internal::TileDimensions& dim, BooleanConstant<true> keepLooking)
+                        algorithmFPType * res, const DimType & dim, BooleanConstant<true> keepLooking)
     {
-        constexpr size_t vectorBlockSizeStep = gbt::prediction::internal::TileDimensions::vectorBlockSizeStep;
-        if (dim.vectorBlockSizeFactor == vectorBlockSizeFactor) {
+        constexpr size_t vectorBlockSizeStep = DimType::vectorBlockSizeStep;
+        if (dim.vectorBlockSizeFactor == vectorBlockSizeFactor)
+        {
             predict<isResValidPtr, reuseBuffer, vectorBlockSizeFactor * vectorBlockSizeStep>(nTrees, nClasses, nRows, nColumns, x, buff, res);
-        } else {
-            predict<isResValidPtr, reuseBuffer, vectorBlockSizeFactor - 1>(nTrees, nClasses, nRows, nColumns, x, buff, res, dim, BooleanConstant<vectorBlockSizeFactor != 1>());
+        }
+        else
+        {
+            predict<isResValidPtr, reuseBuffer, vectorBlockSizeFactor - 1>(
+                nTrees, nClasses, nRows, nColumns, x, buff, res, dim, BooleanConstant<vectorBlockSizeFactor != DimType::minVectorBlockSizeFactor>());
         }
     }
 
     template <bool isResValidPtr, bool reuseBuffer, size_t vectorBlockSizeFactor>
     inline void predict(size_t nTrees, size_t nClasses, size_t nRows, size_t nColumns, const algorithmFPType * x, algorithmFPType * buff,
-                        algorithmFPType * res, const gbt::prediction::internal::TileDimensions& dim, BooleanConstant<false> keepLooking)
+                        algorithmFPType * res, const DimType & dim, BooleanConstant<false> keepLooking)
     {
-        constexpr size_t vectorBlockSizeStep = gbt::prediction::internal::TileDimensions::vectorBlockSizeStep;
+        constexpr size_t vectorBlockSizeStep = DimType::vectorBlockSizeStep;
         predict<isResValidPtr, reuseBuffer, vectorBlockSizeFactor * vectorBlockSizeStep>(nTrees, nClasses, nRows, nColumns, x, buff, res);
     }
 
     template <bool isResValidPtr, bool reuseBuffer>
     inline void predict(size_t nTrees, size_t nClasses, size_t nRows, size_t nColumns, const algorithmFPType * x, algorithmFPType * buff,
-                        algorithmFPType * res, const gbt::prediction::internal::TileDimensions& dim)
+                        algorithmFPType * res, const DimType & dim)
     {
-        constexpr size_t maxVectorBlockSizeFactor = gbt::prediction::internal::TileDimensions::maxVectorBlockSizeFactor;
-        if (maxVectorBlockSizeFactor > 1) {
-            predict<isResValidPtr, reuseBuffer, maxVectorBlockSizeFactor>(nTrees, nClasses, nRows, nColumns, x, buff, res, dim, BooleanConstant<true>());
-        } else {
-            predict<isResValidPtr, reuseBuffer, maxVectorBlockSizeFactor>(nTrees, nClasses, nRows, nColumns, x, buff, res, dim, BooleanConstant<false>());
+        constexpr size_t maxVectorBlockSizeFactor = DimType::maxVectorBlockSizeFactor;
+        if (maxVectorBlockSizeFactor > 1)
+        {
+            predict<isResValidPtr, reuseBuffer, maxVectorBlockSizeFactor>(nTrees, nClasses, nRows, nColumns, x, buff, res, dim,
+                                                                          BooleanConstant<true>());
+        }
+        else
+        {
+            predict<isResValidPtr, reuseBuffer, maxVectorBlockSizeFactor>(nTrees, nClasses, nRows, nColumns, x, buff, res, dim,
+                                                                          BooleanConstant<false>());
         }
     }
 
     template <bool reuseBuffer>
     inline void predict(size_t nTrees, size_t nClasses, size_t nRows, size_t nColumns, const algorithmFPType * x, algorithmFPType * buff,
-                        algorithmFPType * res, const gbt::prediction::internal::TileDimensions& dim)
+                        algorithmFPType * res, const DimType & dim)
     {
         if (res)
         {
@@ -376,7 +396,7 @@ services::Status PredictMulticlassTask<algorithmFPType, cpu>::run(const gbt::cla
     DAAL_CHECK_MALLOC(this->_aTree.get());
     for (size_t i = 0; i < nTreesTotal; ++i) this->_aTree[i] = m->at(i);
 
-    DimType dim(*_data, nTreesTotal);
+    DimType dim(*_data, nTreesTotal, getNumberOfNodes(nTreesTotal));
 
     return predictByAllTrees(nTreesTotal, nClasses, dim);
 }
@@ -403,7 +423,8 @@ void PredictMulticlassTask<algorithmFPType, cpu>::predictByTreesVector(algorithm
     algorithmFPType v[vectorBlockSize];
     for (size_t iTree = iFirstTree, iLastTree = iFirstTree + nTrees; iTree < iLastTree; ++iTree)
     {
-        gbt::prediction::internal::predictForTreeVector<algorithmFPType, TreeType, cpu, hasUnorderedFeatures, hasAnyMissing, vectorBlockSize>(*this->_aTree[iTree], this->_featHelper, x, v, dispatcher);
+        gbt::prediction::internal::predictForTreeVector<algorithmFPType, TreeType, cpu, hasUnorderedFeatures, hasAnyMissing, vectorBlockSize>(
+            *this->_aTree[iTree], this->_featHelper, x, v, dispatcher);
 
         PRAGMA_IVDEP
         PRAGMA_VECTOR_ALWAYS
